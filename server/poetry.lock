@@ -228,6 +228,22 @@ files = [
 ]
 
 [[package]]
+name = "baml-py"
+version = "0.76.2"
+description = "BAML python bindings (pyproject.toml)"
+optional = false
+python-versions = "*"
+files = [
+    {file = "baml_py-0.76.2-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:47c956da2377c3b637a4dc2840b07650dd856082c490f2c7443f81d4c46f9518"},
+    {file = "baml_py-0.76.2-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:54a75feff7dc48f83b747692759ec0639a74a79455807a2fff26141741d3632e"},
+    {file = "baml_py-0.76.2-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:657b937d00d9688880511d56f2973596cd816723c80620749972bc3e7ec739fe"},
+    {file = "baml_py-0.76.2-cp38-abi3-manylinux_2_24_aarch64.whl", hash = "sha256:b9df159d2a2fec9fb07620d68c340f1f45a36f566fd54211fb84834a135f8bd4"},
+    {file = "baml_py-0.76.2-cp38-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:e8177f2109f850037f25b1ad4858df314f5984b5ab13c630d2459ac1a0586385"},
+    {file = "baml_py-0.76.2-cp38-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:a5a55f6237fe399f9a2e5270de00c4844651184d98e9891d4795d43099acf911"},
+    {file = "baml_py-0.76.2-cp38-abi3-win_amd64.whl", hash = "sha256:1a26e1c42c8450f95bfe9b04dfc26229e1188b9056fc295ee476039950076f79"},
+]
+
+[[package]]
 name = "beautifulsoup4"
 version = "4.13.3"
 description = "Screen-scraping library"
@@ -528,6 +544,28 @@ files = [
     {file = "distro-1.9.0-py3-none-any.whl", hash = "sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2"},
     {file = "distro-1.9.0.tar.gz", hash = "sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed"},
 ]
+
+[[package]]
+name = "elevenlabs"
+version = "1.51.0"
+description = ""
+optional = false
+python-versions = "<4.0,>=3.8"
+files = [
+    {file = "elevenlabs-1.51.0-py3-none-any.whl", hash = "sha256:3c500e08f4fb9cf3503617fd5f150e0fe574ca6670a5bc28eb4a440e3491c453"},
+    {file = "elevenlabs-1.51.0.tar.gz", hash = "sha256:a5093dbce5c8a40694424266bae5a16792b20994b221647d7e85676be37df32b"},
+]
+
+[package.dependencies]
+httpx = ">=0.21.2"
+pydantic = ">=1.9.2"
+pydantic-core = ">=2.18.2,<3.0.0"
+requests = ">=2.20"
+typing_extensions = ">=4.0.0"
+websockets = ">=11.0"
+
+[package.extras]
+pyaudio = ["pyaudio (>=0.2.14)"]
 
 [[package]]
 name = "fastapi"
@@ -2752,4 +2790,4 @@ cffi = ["cffi (>=1.11)"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "5a863203e8dc8b23f3316ab9c8ee8fa66daef4526615a34bda0eba14b62b71e7"
+content-hash = "b1a92e3d5bc39d8d55a14c30721b80806b795b86db7155a724d9fccedf3972e1"

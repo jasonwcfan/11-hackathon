@@ -12,8 +12,17 @@ from browser_use import Agent, Controller
 from langchain_anthropic import ChatAnthropic
 import uvicorn
 from typing import List
+import asyncio
+from elevenlabs import (
+    ConversationalConfig,
+    ElevenLabs,
+    AgentConfig,
+    PromptAgent,
+    PromptAgentToolsItem_System
+)
+
 from .database import Database
-from .models import FindDealershipsResult, Dealership
+from .models import FindBusinessesResult, Business
 
 app = FastAPI()
 database = Database()
@@ -42,25 +51,45 @@ if not all(required_vars):
 # Initialize Twilio client
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
   
-find_dealerships_task = """Find the URLs of the top 10 Toyota dealerships in the San Francisco Bay Area.
+find_businesses_task = """Find the URLs of the top 10 Toyota dealerships in the San Francisco Bay Area.
 
 Then visit each URL and get the name and phone number of the dealership.
 """
 
-@app.post("/find-dealerships")
-async def find_dealerships():
+phone_agent_prompt = """You are someone calling local businesses to get quotes on services. Keep your tone casual and conversational, don't talk too slow. Add some stutters and pauses to make it sound like you're not used to talking on the phone.
+
+Start by giving the basic context on what you're looking for, don't provide any personal information unless asked.
+
+If requested, answer questions based on the information below, without going into too much detail. Steer the conversation towards getting a quote.
+
+Here is the relevant information:
+Your Name: {user_name}
+Your Phone Number: {user_phone_number}
+Service: {service_description}
+Service Details: {service_details}
+Business Name: {business_name}
+
+If you are asked something and the answer is not in the information above, just say you're not sure and make up an excuse. Push towards getting a quote as soon as possible, but be polite.
+
+Once you get a price quoted, move to ending the call politely, saying you're comparing some options and will let them know.
+
+If the other person offers to call you back or text you, agree but don't commit to any particular time. If the person asks you to text or email them something, say you can do it after the call but you'd still like a quote first.
+"""
+
+@app.post("/find-businesses")
+async def find_businesses():
   try:
-    controller = Controller(output_model=FindDealershipsResult)
+    controller = Controller(output_model=FindBusinessesResult)
     agent = Agent(
-      task=find_dealerships_task,
+      task=find_businesses_task,
       llm=ChatAnthropic(model="claude-3-5-sonnet-latest"),
       controller=controller,
     )
     history = await agent.run()
     result = history.final_result()
     if result:
-      parsed: FindDealershipsResult = FindDealershipsResult.model_validate_json(result)
-      database.save_dealerships(parsed.dealerships)
+      parsed: FindBusinessesResult = FindBusinessesResult.model_validate_json(result)
+      database.save_businesses(parsed.businesses)
       return {"result": parsed}
     else:
       return {"error": "No result found"}
@@ -85,18 +114,21 @@ async def get_signed_url():
 async def outbound_call(request: Request):
   """Route to initiate outbound calls"""
   data = await request.json()
-  number = data.get("number")
-  prompt = data.get("prompt")
-  first_message = data.get("first_message")
+  business_number = data.get("business_number")
+  user_name = data.get("user_name")
+  user_phone_number = data.get("user_phone_number")
+  business_name = data.get("business_name")
+  service_description = data.get("service_description")
+  service_details = data.get("service_details")
 
-  if not number:
-    raise HTTPException(status_code=400, detail="Phone number is required")
+  if not business_number:
+    raise HTTPException(status_code=400, detail="Business number is required")
 
   try:
     call = twilio_client.calls.create(
       from_=TWILIO_PHONE_NUMBER,
-      to=number,
-      url=f"https://{request.headers['host']}/outbound-call-twiml?prompt={quote(prompt)}&first_message={quote(first_message)}",
+      to=business_number,
+      url=f"https://{request.headers['host']}/outbound-call-twiml?business_name={quote(business_name)}&service_description={quote(service_description)}&service_details={quote(service_details)}&user_name={quote(user_name)}&user_phone_number={quote(user_phone_number)}",
       method="GET"
     )
 
@@ -117,15 +149,19 @@ async def outbound_call(request: Request):
 @app.get("/outbound-call-twiml")
 async def outbound_call_twiml(request: Request):
   """TwiML route for outbound calls"""
-  prompt = request.query_params.get("prompt", "")
-  first_message = request.query_params.get("first_message", "")
+  user_name = request.query_params.get("user_name", "")
+  user_phone_number = request.query_params.get("user_phone_number", "")
+  business_name = request.query_params.get("business_name", "")
+  service_description = request.query_params.get("service_description", "")
+  service_details = request.query_params.get("service_details", "")
+
+  prompt = phone_agent_prompt.format(business_name=business_name, service_description=service_description, service_details=service_details, user_name=user_name, user_phone_number=user_phone_number)
 
   twiml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
   <Response>
     <Connect>
     <Stream url="wss://{request.headers['host']}/outbound-media-stream">
       <Parameter name="prompt" value="{prompt}" />
-      <Parameter name="first_message" value="{first_message}" />
     </Stream>
     </Connect>
   </Response>"""
@@ -144,6 +180,45 @@ async def outbound_media_stream(websocket: WebSocket):
   elevenlabs_ws = None
   custom_parameters = None
 
+  async def handle_elevenlabs_messages(elevenlabs_ws):
+    # Handle messages from ElevenLabs
+    async for message in elevenlabs_ws:
+      try:
+        msg = json.loads(message)
+        msg_type = msg.get("type")
+        print(f"[ElevenLabs] Received message type: {msg_type}")
+
+        if msg_type == "audio":
+          if stream_sid:
+            audio_chunk = msg.get("audio", {}).get("chunk") or msg.get("audio_event", {}).get("audio_base_64")
+            if audio_chunk:
+              print("[ElevenLabs] Sending audio chunk to Twilio")
+              await websocket.send_json({
+                "event": "media",
+                "streamSid": stream_sid,
+                "media": {"payload": audio_chunk}
+              })
+
+        elif msg_type == "interruption":
+          if stream_sid:
+            print("[ElevenLabs] Sending clear event to Twilio")
+            await websocket.send_json({
+              "event": "clear",
+              "streamSid": stream_sid
+            })
+
+        elif msg_type == "ping":
+          event_id = msg.get("ping_event", {}).get("event_id")
+          if event_id:
+            print("[ElevenLabs] Responding to ping")
+            await elevenlabs_ws.send(json.dumps({
+              "type": "pong",
+              "event_id": event_id
+            }))
+
+      except Exception as e:
+        print(f"[ElevenLabs] Error processing message: {e}")
+
   async def setup_elevenlabs():
     nonlocal elevenlabs_ws
     try:
@@ -157,52 +232,20 @@ async def outbound_media_stream(websocket: WebSocket):
         "conversation_config_override": {
           "agent": {
             "prompt": {
-              "prompt": custom_parameters.get("prompt", "you are a gary from the phone store")
+              "prompt": custom_parameters.get("prompt", "you are a gary from the phone store"),
+              "tools": [
+                {
+                  "type": "system",
+                  "name": "end_call",
+                  "description": "End the call once you get a quote. If asked more questions, answer briefly before saying you're just calling around a few places to get a quote."
+                }
+              ]
             },
-            "first_message": custom_parameters.get("first_message", "hey there! how can I help you today?")
           }
         }
       }
       await elevenlabs_ws.send(json.dumps(initial_config))
       print("[ElevenLabs] Sent initial config")
-
-      # Handle messages from ElevenLabs
-      async for message in elevenlabs_ws:
-        try:
-          msg = json.loads(message)
-          msg_type = msg.get("type")
-          print(f"[ElevenLabs] Received message type: {msg_type}")
-
-          if msg_type == "audio":
-            if stream_sid:
-              audio_chunk = msg.get("audio", {}).get("chunk") or msg.get("audio_event", {}).get("audio_base_64")
-              if audio_chunk:
-                print("[ElevenLabs] Sending audio chunk to Twilio")
-                await websocket.send_json({
-                  "event": "media",
-                  "streamSid": stream_sid,
-                  "media": {"payload": audio_chunk}
-                })
-
-          elif msg_type == "interruption":
-            if stream_sid:
-              print("[ElevenLabs] Sending clear event to Twilio")
-              await websocket.send_json({
-                "event": "clear",
-                "streamSid": stream_sid
-              })
-
-          elif msg_type == "ping":
-            event_id = msg.get("ping_event", {}).get("event_id")
-            if event_id:
-              print("[ElevenLabs] Responding to ping")
-              await elevenlabs_ws.send(json.dumps({
-                "type": "pong",
-                "event_id": event_id
-              }))
-
-        except Exception as e:
-          print(f"[ElevenLabs] Error processing message: {e}")
 
     except Exception as e:
       print(f"[ElevenLabs] Setup error: {e}")
@@ -219,6 +262,7 @@ async def outbound_media_stream(websocket: WebSocket):
         custom_parameters = message["start"]["customParameters"]
         print(f"[Twilio] Stream started - StreamSid: {stream_sid}, CallSid: {call_sid}")
         await setup_elevenlabs()
+        asyncio.create_task(handle_elevenlabs_messages(elevenlabs_ws))
 
       elif event == "media" and elevenlabs_ws:
         audio_message = {

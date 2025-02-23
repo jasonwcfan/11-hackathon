@@ -41,5 +41,5 @@ def all_succeeded(checks: Dict[CheckName, Check]) -> bool:
 
 
 class Quote(BaseModel):
-    quote_amount: float
+    quote_amount: Optional[float] = None
     notes: str

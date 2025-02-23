@@ -1,6 +1,6 @@
 // Defining a data model.
 class Quote {
-  quote_amount float @description("The amount that was quoted.")
+  quote_amount float? @description("The amount that was quoted.")
   notes string @description("Any additional notes or caveats about the product or service or quote.")
 }
 

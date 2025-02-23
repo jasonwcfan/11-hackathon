@@ -20,7 +20,8 @@ from elevenlabs import (
     PromptAgent,
     PromptAgentToolsItem_System
 )
-
+from baml_client import b as baml
+from baml_client.types import Quote
 from .database import Database
 from .models import FindBusinessesResult, Business
 
@@ -56,7 +57,7 @@ find_businesses_task = """Find the URLs of the top 10 Toyota dealerships in the 
 Then visit each URL and get the name and phone number of the dealership.
 """
 
-phone_agent_prompt = """You are someone calling local businesses to get quotes on services. Keep your tone casual and conversational, don't talk too slow. Add some stutters and pauses to make it sound like you're not used to talking on the phone.
+phone_agent_prompt = """You are someone calling local businesses to get quotes on services. Keep your tone casual and conversational, don't talk too slow. Add some stutters and pauses to make it sound natural, but not too many. Don't be awkward.
 
 Start by giving the basic context on what you're looking for, don't provide any personal information unless asked.
 
@@ -115,6 +116,7 @@ async def outbound_call(request: Request):
   """Route to initiate outbound calls"""
   data = await request.json()
   business_number = data.get("business_number")
+  business_url = data.get("business_url")
   user_name = data.get("user_name")
   user_phone_number = data.get("user_phone_number")
   business_name = data.get("business_name")
@@ -128,7 +130,7 @@ async def outbound_call(request: Request):
     call = twilio_client.calls.create(
       from_=TWILIO_PHONE_NUMBER,
       to=business_number,
-      url=f"https://{request.headers['host']}/outbound-call-twiml?business_name={quote(business_name)}&service_description={quote(service_description)}&service_details={quote(service_details)}&user_name={quote(user_name)}&user_phone_number={quote(user_phone_number)}",
+      url=f"https://{request.headers['host']}/outbound-call-twiml?business_name={quote(business_name)}&service_description={quote(service_description)}&service_details={quote(service_details)}&user_name={quote(user_name)}&user_phone_number={quote(user_phone_number)}&business_url={quote(business_url)}",
       method="GET"
     )
 
@@ -152,6 +154,7 @@ async def outbound_call_twiml(request: Request):
   user_name = request.query_params.get("user_name", "")
   user_phone_number = request.query_params.get("user_phone_number", "")
   business_name = request.query_params.get("business_name", "")
+  business_url = request.query_params.get("business_url", "")
   service_description = request.query_params.get("service_description", "")
   service_details = request.query_params.get("service_details", "")
 
@@ -162,6 +165,7 @@ async def outbound_call_twiml(request: Request):
     <Connect>
     <Stream url="wss://{request.headers['host']}/outbound-media-stream">
       <Parameter name="prompt" value="{prompt}" />
+      <Parameter name="business_url" value="{business_url}" />
     </Stream>
     </Connect>
   </Response>"""
@@ -179,6 +183,7 @@ async def outbound_media_stream(websocket: WebSocket):
   call_sid = None
   elevenlabs_ws = None
   custom_parameters = None
+  conversation_id = None
 
   async def handle_elevenlabs_messages(elevenlabs_ws):
     # Handle messages from ElevenLabs
@@ -187,6 +192,16 @@ async def outbound_media_stream(websocket: WebSocket):
         msg = json.loads(message)
         msg_type = msg.get("type")
         print(f"[ElevenLabs] Received message type: {msg_type}")
+
+        if msg_type == "conversation_initiation_metadata":
+          nonlocal conversation_id
+          conversation_id = msg.get("conversation_initiation_metadata_event", {}).get("conversation_id")
+          print(f"[ElevenLabs] Received conversation ID: {conversation_id}")
+          business_url = custom_parameters.get("business_url", "")
+          business = database.get_business(business_url=business_url)
+          if business:
+            business.conversation_id = conversation_id
+            database.upsert_businesses([business])
 
         if msg_type == "audio":
           if stream_sid:
@@ -237,7 +252,7 @@ async def outbound_media_stream(websocket: WebSocket):
                 {
                   "type": "system",
                   "name": "end_call",
-                  "description": "End the call once you get a quote. If asked more questions, answer briefly before saying you're just calling around a few places to get a quote."
+                  "description": "Politely end the call as soon as you get a quote."
                 }
               ]
             },
@@ -254,7 +269,6 @@ async def outbound_media_stream(websocket: WebSocket):
   try:
     async for message in websocket.iter_json():
       event = message.get("event")
-      print(f"[Twilio] Received event: {event}")
       
       if event == "start":
         stream_sid = message["start"]["streamSid"]
@@ -283,6 +297,69 @@ async def outbound_media_stream(websocket: WebSocket):
     if elevenlabs_ws:
       await elevenlabs_ws.close()
     await websocket.close()
+    # Get transcript and extract quote
+    try:
+      asyncio.sleep(5)
+      import pdb; pdb.set_trace()
+      business = database.get_business(conversation_id=conversation_id)
+      if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+      async def get_conversation(conversation_id):
+        async with httpx.AsyncClient() as client:
+          response = await client.get(
+            f"https://api.elevenlabs.io/v1/convai/conversations/{conversation_id}",
+            headers={"xi-api-key": ELEVENLABS_API_KEY}
+          )
+
+          if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail="Failed to get conversation")
+
+          return response.json()
+
+      conversation = await get_conversation(conversation_id)
+      transcript = conversation.get("transcript", "No transcript available")
+      transcript_text = ""
+      for message in transcript:
+        transcript_text += f"{message['role']}: {message['message']}\n\n"
+      quote = baml.ExtractQuote(transcript_text)
+      business.quote = quote.quote_amount
+      business.notes = quote.notes
+      database.upsert_businesses([business])
+    except Exception as e:
+      print(f"[ProcessConversation] Error: {e}")
+    
+
+@app.post("/process-conversation")
+async def process_conversation(request: Request):
+  """Get the transcript from the most recent conversation and extract the quote."""
+  conversation_id = request.query_params.get("conversation_id", "")
+  business = database.get_business(conversation_id=conversation_id)
+  if not business:
+    raise HTTPException(status_code=404, detail="Business not found")
+
+  async def get_conversation(conversation_id):
+    async with httpx.AsyncClient() as client:
+      response = await client.get(
+        f"https://api.elevenlabs.io/v1/convai/conversations/{conversation_id}",
+        headers={"xi-api-key": ELEVENLABS_API_KEY}
+      )
+
+      if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail="Failed to get conversation")
+
+      return response.json()
+
+  conversation = await get_conversation(conversation_id)
+  transcript = conversation.get("transcript", "No transcript available")
+  transcript_text = ""
+  for message in transcript:
+    transcript_text += f"{message['role']}: {message['message']}\n\n"
+  quote = baml.ExtractQuote(transcript_text)
+  business.quote = quote.quote_amount
+  business.notes = quote.notes
+  database.upsert_businesses([business])
+  return {"transcript": transcript}
 
 def start():
     uvicorn.run(

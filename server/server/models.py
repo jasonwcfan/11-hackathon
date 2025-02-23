@@ -1,10 +1,13 @@
 from pydantic import BaseModel
 from typing import List, Optional
 
-class Dealership(BaseModel):
+class Business(BaseModel):
   name: str
   url: str
   phone_number: int
+  notes: Optional[str]
+  quote: Optional[float]
+  conversation_id: Optional[str]
 
-class FindDealershipsResult(BaseModel):
-  dealerships: List[Dealership]
+class FindBusinessesResult(BaseModel):
+  businesses: List[Business]

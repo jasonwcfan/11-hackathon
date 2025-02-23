@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "server"
+version = "0.1.0"
+description = ""
+authors = ["jasonwcfan <jason.wc.fan@gmail.com>"]
+readme = "README.md"
+packages = [{include = "server"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.115.8"
+browser-use = "^0.1.39"
+langchain = "^0.3.19"
+uvicorn = "^0.34.0"
+supabase = "^2.13.0"
+twilio = "^9.4.6"
+
+[tool.poetry.scripts]
+start = "server.main:start"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
